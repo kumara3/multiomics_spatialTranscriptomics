@@ -72,6 +72,8 @@ color_cluster=c("#00ADFA","#005e61","#BF40BF","#655b6d","#FF0000","#E88526","#D3
 color_samples=c("#00ADFA","#005e61","#BF40BF","#655b6d","#FF0000","#E88526","#D39200","#B79F00","#93AA00","#5EB300")
 #"#C77CFF","#FF69B4"
 file = paste(output_dir,"/","horizontal_integration_allSamples.png", sep="")
+rds_file = paste(output_dir,"/","horizontal_integration_allSamples_banksy_harmony.rds", sep="")
+saveRDS(seob, rds_file)
 png(file, height= 980, width=1080)
 grid.arrange(
     DimPlot(seob, pt.size = 0.25, label = TRUE, label.size = 3, repel = TRUE,group.by = c('sample'), cols=color_samples),
