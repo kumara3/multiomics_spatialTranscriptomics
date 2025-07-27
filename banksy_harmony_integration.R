@@ -68,8 +68,8 @@ seob = RunUMAP(seob, reduction = 'harmony', reduction.name = 'umap_harmony', dim
 seob = FindNeighbors(seob, reduction = 'harmony')
 seob = FindClusters(seob)
 
-color_cluster=c("#00ADFA","#005e61","#BF40BF","#655b6d","#FF0000","#E88526","#D39200","#B79F00","#93AA00","#5EB300","6c8f9d","#00BA38","#762a83","#4292c6","#807dba","#08519c","#c6dbef","#deebf7")
-color_samples=c("#00ADFA","#005e61","#BF40BF","#655b6d","#FF0000","#E88526","#D39200","#B79F00","#93AA00","#5EB300","6c8f9d")
+color_cluster=c("#00ADFA","#005e61","#BF40BF","#655b6d","#FF0000","#E88526","#D39200","#B79F00","#93AA00","#5EB300","6c8f9d","#00BA38","#762a83","#4292c6","#807dba","#08519c","#c6dbef","#deebf7","#f8766d","#7CAE00","#00BFC4","#C77CFF")
+color_samples=c("#00ADFA","#005e61","#BF40BF","#655b6d","#FF0000","#E88526","#D39200","#B79F00","#93AA00","#5EB300")
 #"#C77CFF","#FF69B4"
 file = paste(output_dir,"/","horizontal_integration_allSamples.png", sep="")
 png(file, height= 980, width=1080)
