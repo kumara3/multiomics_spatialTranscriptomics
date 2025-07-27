@@ -62,10 +62,11 @@ object_list <- lapply(matrix_vector, FUN=function(i) {
     # Find markers
     DefaultAssay(seobj) <- 'Spatial'
     markers <- FindAllMarkers(seobj, only.pos = TRUE,assay = 'SCT', min.pct = 0.25, logfc.threshold = 0.25)
+
     #markers <- markers[markers$p_val_adj < 0.05]
     rds_file = paste(output_dir,"/",sample_name,"/",sample_name,".rds", sep="")
     saveRDS(seobj, file=rds_file)
-    write.table(markers, file = paste(output_dir,"/",sample_name,"/",sample_name,".diff.txt", sep=""), col.names = NA)
+    write.table(data.frame("GENE_NAME"=rownames(markers),markers), file = paste(output_dir,"/",sample_name,"/",sample_name,".diff.txt", sep=""), row.names = FALSE, sep="\t")
 
 })
 
