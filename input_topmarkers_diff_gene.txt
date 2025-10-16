@@ -1,0 +1,11 @@
+/scratch//Gliome_spatial/github_scripts/multiomics_spatialTranscriptomics/seurat_spatial_analysisv2/DMG5/DMG5.diff.txt
+/scratch//Gliome_spatial/github_scripts/multiomics_spatialTranscriptomics/seurat_spatial_analysisv2/GBM1/GBM1.diff.txt
+/scratch//Gliome_spatial/github_scripts/multiomics_spatialTranscriptomics/seurat_spatial_analysisv2/GBM4/GBM4.diff.txt
+/scratch//Gliome_spatial/github_scripts/multiomics_spatialTranscriptomics/seurat_spatial_analysisv2/DMG3/DMG3.diff.txt
+/scratch//Gliome_spatial/github_scripts/multiomics_spatialTranscriptomics/seurat_spatial_analysisv2/DMG1/DMG1.diff.txt
+/scratch//Gliome_spatial/github_scripts/multiomics_spatialTranscriptomics/seurat_spatial_analysisv2/DMG2/DMG2.diff.txt
+/scratch//Gliome_spatial/github_scripts/multiomics_spatialTranscriptomics/seurat_spatial_analysisv2/GBM3/GBM3.diff.txt
+/scratch//Gliome_spatial/github_scripts/multiomics_spatialTranscriptomics/seurat_spatial_analysisv2/DMG4/DMG4.diff.txt
+/scratch//Gliome_spatial/github_scripts/multiomics_spatialTranscriptomics/seurat_spatial_analysisv2/GBM2/GBM2.diff.txt
+/scratch//Gliome_spatial/github_scripts/multiomics_spatialTranscriptomics/seurat_spatial_analysisv2/GBM5_1/GBM5_1.diff.txt
+/scratch//Gliome_spatial/github_scripts/multiomics_spatialTranscriptomics/seurat_spatial_analysisv2/GBM5_2/GBM5_2.diff.txt

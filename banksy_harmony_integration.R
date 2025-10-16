@@ -68,8 +68,9 @@ seob = RunUMAP(seob, reduction = 'harmony', reduction.name = 'umap_harmony', dim
 seob = FindNeighbors(seob, reduction = 'harmony')
 seob = FindClusters(seob)
 
-color_cluster=c("#00ADFA","#005e61","#BF40BF","#655b6d","#FF0000","#E88526","#D39200","#B79F00","#93AA00","#5EB300","6c8f9d","#00BA38","#762a83","#4292c6","#807dba","#08519c","#c6dbef","#deebf7","#f8766d","#7CAE00","#00BFC4","#C77CFF")
-color_samples=c("#00ADFA","#005e61","#BF40BF","#655b6d","#FF0000","#E88526","#D39200","#B79F00","#93AA00","#5EB300")
+# Plot
+color_cluster=c("#00ADFA","#005e61","#BF40BF","#655b6d","#FF0000","#E88526","#D39200","#B79F00","#93AA00","#5EB300","#6c8f9d","#00BA38","#762a83","#4292c6","#807dba","#08519c","#c6dbef","#deebf7","#f8766d","#7CAE00","#00BFC4","#C77CFF")
+color_samples=c("#00ADFA","#005e61","#BF40BF","#655b6d","#FF0000","#E88526","#D39200","#B79F00","#93AA00","#5EB300","#6c8f9d")
 #"#C77CFF","#FF69B4"
 file = paste(output_dir,"/","horizontal_integration_allSamples.png", sep="")
 rds_file = paste(output_dir,"/","horizontal_integration_allSamples_banksy_harmony.rds", sep="")
@@ -80,5 +81,17 @@ grid.arrange(
     DimPlot(seob, pt.size = 0.25, label = TRUE, label.size = 3, repel = TRUE,group.by = c('BANKSY_snn_res.0.8'), cols=color_cluster),
     SpatialDimPlot(seob, stroke = NA, label = TRUE, label.size = 3,repel = TRUE, alpha = 0.5, pt.size.factor = 2),
     nrow = 3
+)
+dev.off()
+
+# Find Markers
+seob <- PrepSCTFindMarkers(seob, assay = "SCT", verbose = TRUE)
+markers <- FindAllMarkers(seob, only.pos = TRUE,assay = 'SCT', min.pct = 0.25, logfc.threshold = 0.25)
+marker_file = paste(output_dir,"/","Intergrated.FindMarkers.diff.txt",sep="")
+write.table(data.frame("GENE_NAME"=rownames(markers),markers), file = marker_file, row.names = FALSE, sep="\t")
+
+grid.arrange(
+    DimPlot(seob, pt.size = 0.25, label = TRUE, label.size = 3, repel = TRUE,split.by = c('sample'), cols=color_cluster),
+    nrow = 4
 )
 dev.off()
