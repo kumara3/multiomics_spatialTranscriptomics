@@ -1,0 +1,11 @@
+#!/bin/bash
+#SBATCH --job-name=job237acbc23a734b0fa06eec81104554ea
+#SBATCH --output=logs/job237acbc23a734b0fa06eec81104554ea_out.txt
+#SBATCH --error=logs/job237acbc23a734b0fa06eec81104554ea_err.txt
+#SBATCH --time=05:00:00
+#SBATCH --mem=16G
+#SBATCH --cpus-per-task=1
+#SBATCH --ntasks=1
+source activate /home/s163196/miniforge3/envs/Rbase
+rscript <- "~/miniforge3/envs/Rbase/bin/Rscript"
+Rscript -e "
