@@ -1,6 +1,6 @@
 # Glioma Niches in Spatial Transcriptomics (DMG H3K27M vs GBM)
 
-This repository documents an analysis workflow and key takeaways from a review of publication: Spatial transcriptomics reveals niche-specific enrichment and vulnerabilities of radial glial stem-like cells in malignant gliomas (https://www.nature.com/articles/s41467-023-36707-6). The study is focussed on **diffuse midline glioma (DMG, H3K27M-mutant)** and **glioblastoma (GBM)**, focused on **spatial organization of cellular states**, **niche-specific regulatory programs**, **copy-number variation**, **deconvolution of cell types**, and **isoform/splicing diversity** across glioma niches.
+- This repository documents an analysis workflow and key takeaways from a review of publication: Spatial transcriptomics reveals niche-specific enrichment and vulnerabilities of radial glial stem-like cells in malignant gliomas (https://www.nature.com/articles/s41467-023-36707-6). The study is focussed on **diffuse midline glioma (DMG, H3K27M-mutant)** and **glioblastoma (GBM)**, focused on **spatial organization of cellular states**, **niche-specific regulatory programs**, **copy-number variation**, **deconvolution of cell types**, and **isoform/splicing diversity** across glioma niches.
 ---
 
 ## Project goals
