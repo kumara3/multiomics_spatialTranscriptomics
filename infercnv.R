@@ -30,7 +30,7 @@
 #' @examples
 #'   Rscript infercnv.R DMG1 /path/to/output
 #'
-#' @author Your Name
+#' @author ashwani kumar
 #' @date 2024
 ################################################################################
 
