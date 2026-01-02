@@ -1,0 +1,230 @@
+---
+title: "Process Visium Sample(s) with SpotClean"
+output: html_document
+params:
+  samples:
+    - sample_id: "SAMPLE_001"
+      matrix_dir: "path/to/raw_feature_bc_matrix"
+      tissue_csv: "path/to/tissue_positions_list.csv"
+      image_path: "path/to/spatial/tissue_hires_image.png"
+      scale_factor_json: "path/to/spatial/scalefactors_json.json"
+  mc_cores: 4
+  gene_to_plot: null      # e.g. "MKI67"; if null, uses first gene in matrix
+  overwrite: false
+  results_dir: "results"
+  plots_dir: "plots"
+  logs_dir: "logs"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = TRUE, warning = TRUE)
+```
+
+## Libraries
+
+```{r libraries}
+library(SpotClean)
+library(Seurat)
+library(ggplot2)
+library(tibble)
+library(readr)
+library(purrr)
+library(cowplot)
+library(parallel)
+```
+
+## Helpers
+
+```{r helpers}
+# Create output dirs
+dir.create(params$results_dir, showWarnings = FALSE, recursive = TRUE)
+dir.create(params$plots_dir,   showWarnings = FALSE, recursive = TRUE)
+dir.create(params$logs_dir,    showWarnings = FALSE, recursive = TRUE)
+
+log_path_for <- function(sample_id) file.path(params$logs_dir, paste0(sample_id, ".log"))
+
+log_msg <- function(sample_id, msg) {
+  line <- sprintf("[%s] %s\n", sample_id, msg)
+  cat(line)
+  flush.console()
+  cat(line, file = log_path_for(sample_id), append = TRUE)
+}
+
+assert_path_exists <- function(path, what = "path") {
+  if (is.null(path) || is.na(path) || identical(path, "")) {
+    stop(sprintf("Missing %s (empty): %s", what, path))
+  }
+  if (!file.exists(path)) {
+    stop(sprintf("Missing %s: %s", what, path))
+  }
+  invisible(TRUE)
+}
+
+validate_sample <- function(sample) {
+  required <- c("sample_id", "matrix_dir", "tissue_csv", "image_path", "scale_factor_json")
+  missing <- required[!required %in% names(sample)]
+  if (length(missing) > 0) {
+    stop(sprintf("Sample entry missing required fields: %s", paste(missing, collapse = ", ")))
+  }
+  if (is.null(sample$sample_id) || identical(sample$sample_id, "")) {
+    stop("sample_id is required and must be non-empty.")
+  }
+  invisible(TRUE)
+}
+
+should_skip <- function(out_path, overwrite = FALSE) {
+  file.exists(out_path) && !isTRUE(overwrite)
+}
+
+pick_gene_to_plot <- function(raw_mat, requested_gene) {
+  if (is.null(requested_gene) || is.na(requested_gene) || identical(requested_gene, "")) {
+    return(rownames(raw_mat)[1])
+  }
+  if (!(requested_gene %in% rownames(raw_mat))) {
+    return(rownames(raw_mat)[1])
+  }
+  requested_gene
+}
+
+process_one_sample <- function(sample, gene_to_plot = NULL, overwrite = FALSE) {
+  validate_sample(sample)
+  sid <- sample$sample_id
+
+  out_rds <- file.path(params$results_dir, paste0(sid, "_spotclean.rds"))
+  if (should_skip(out_rds, overwrite)) {
+    log_msg(sid, paste("Skipping (exists):", out_rds))
+    return(list(sample_id = sid, status = "skipped", rds = out_rds, error = NA_character_))
+  }
+
+  # Validate inputs
+  assert_path_exists(sample$matrix_dir, "matrix_dir")
+  assert_path_exists(sample$tissue_csv, "tissue_csv")
+  assert_path_exists(sample$image_path, "image_path")
+  assert_path_exists(sample$scale_factor_json, "scale_factor_json")
+
+  tryCatch({
+    t0 <- Sys.time()
+    log_msg(sid, "Starting")
+
+    raw_mat <- read10xRaw(sample$matrix_dir)
+    slide_info <- read10xSlide(sample$tissue_csv, sample$image_path, sample$scale_factor_json)
+    slide_obj <- createSlide(count_mat = raw_mat, slide_info = slide_info)
+
+    gene <- pick_gene_to_plot(raw_mat, gene_to_plot)
+    if (!is.null(gene_to_plot) && !(gene_to_plot %in% rownames(raw_mat))) {
+      log_msg(sid, paste("gene_to_plot not found:", gene_to_plot, "-> using:", gene))
+    }
+
+    # Raw heatmap
+    raw_plot <- visualizeHeatmap(slide_obj, gene) + ggtitle(paste("Raw:", gene))
+    ggsave(
+      filename = file.path(params$plots_dir, sprintf("%s_raw_heatmap.png", sid)),
+      plot = raw_plot,
+      width = 6, height = 5
+    )
+
+    # SpotClean decontamination
+    decont_obj <- spotclean(slide_obj)
+
+    # Contamination rate plot
+    contam_plot <- visualizeHeatmap(
+      decont_obj,
+      metadata(decont_obj)$contamination_rate,
+      logged = FALSE,
+      legend_title = "Contamination Rate",
+      legend_range = c(0, 1)
+    ) + ggtitle("Estimated contamination")
+
+    ggsave(
+      filename = file.path(params$plots_dir, sprintf("%s_contam_rate.png", sid)),
+      plot = contam_plot,
+      width = 6, height = 5
+    )
+
+    # Clean heatmap
+    clean_plot <- visualizeHeatmap(decont_obj, gene) + ggtitle(paste("Clean:", gene))
+    ggsave(
+      filename = file.path(params$plots_dir, sprintf("%s_clean_heatmap.png", sid)),
+      plot = clean_plot,
+      width = 6, height = 5
+    )
+
+    # Save SpotClean object
+    saveRDS(decont_obj, file = out_rds)
+
+    dt <- round(as.numeric(difftime(Sys.time(), t0, units = "secs")), 2)
+    log_msg(sid, paste("Saved SpotClean object:", out_rds))
+    log_msg(sid, paste("Done in", dt, "sec"))
+
+    list(sample_id = sid, status = "ok", rds = out_rds, error = NA_character_)
+  }, error = function(e) {
+    log_msg(sid, paste("ERROR:", e$message))
+    list(sample_id = sid, status = "error", rds = NA_character_, error = e$message)
+  })
+}
+```
+
+## Run (parameterized + parallel with `mclapply`)
+
+```{r run_parallel}
+samples <- params$samples
+if (is.null(samples) || length(samples) == 0) {
+  stop("params$samples must contain at least one sample entry.")
+}
+
+# Determine cores
+mc_cores <- as.integer(params$mc_cores)
+if (is.na(mc_cores) || mc_cores < 1) mc_cores <- 1
+mc_cores <- min(mc_cores, length(samples))
+
+# NOTE:
+# - parallel::mclapply uses fork and works on macOS/Linux.
+# - On Windows, mclapply will not fork; we fall back to sequential execution by forcing mc_cores = 1.
+if (.Platform$OS.type == "windows" && mc_cores > 1) {
+  warning("Windows detected: mclapply does not fork on Windows. Falling back to mc_cores=1 (sequential).")
+  mc_cores <- 1
+}
+
+results_list <- mclapply(
+  X = samples,
+  FUN = function(s) process_one_sample(
+    sample = s,
+    gene_to_plot = params$gene_to_plot,
+    overwrite = params$overwrite
+  ),
+  mc.cores = mc_cores
+)
+
+# Summarize results as a data.frame
+results_df <- do.call(rbind, lapply(results_list, function(x) {
+  data.frame(
+    sample_id = x$sample_id,
+    status    = x$status,
+    rds       = x$rds,
+    error     = x$error,
+    stringsAsFactors = FALSE
+  )
+}))
+
+results_df
+```
+
+## How to render from CLI (example)
+
+```{r cli_example, eval=FALSE}
+# Example:
+# Rscript -e "rmarkdown::render('process_visium_spotclean_parallel.Rmd', params=list(
+#   samples=list(
+#     list(sample_id='S1', matrix_dir='/path/matrix1', tissue_csv='/path/tissue1.csv',
+#          image_path='/path/image1.png', scale_factor_json='/path/scalefactors1.json'),
+#     list(sample_id='S2', matrix_dir='/path/matrix2', tissue_csv='/path/tissue2.csv',
+#          image_path='/path/image2.png', scale_factor_json='/path/scalefactors2.json')
+#   ),
+#   mc_cores=4,
+#   gene_to_plot='MKI67',
+#   overwrite=FALSE,
+#   results_dir='results',
+#   plots_dir='plots',
+#   logs_dir='logs'
+# ))"
+```

@@ -1,0 +1,610 @@
+---
+title: "Transcriptional Module Discovery and Co-Expression Analysis"
+author: "Your Name"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: show
+    theme: cosmo
+params:
+  marker_list_file: "/path/to/input_topmarkers_diff_gene.txt"
+  seurat_object: "/path/to/banksy_harmony_integration.rds"
+  output_dir: "AddModuleScore_TranscriptionalModule"
+  log2fc_threshold: 0.25
+  padj_threshold: 0.05
+  top_n_markers: 50
+  min_genes_per_cluster: 50
+  min_genes_per_module: 29
+  assay_name: "SCT"
+  n_clusters: 4
+  correlation_method: "pearson"
+  hclust_method: "complete"
+  parallel: TRUE
+  n_workers: 4
+---
+
+# Transcriptional Module Analysis Pipeline
+
+This notebook performs transcriptional module discovery from spatial transcriptomics data by:
+
+1. Identifying top differential markers per cluster across multiple samples
+2. Creating gene sets for co-expression modules
+3. Computing module scores using Seurat AddModuleScore
+4. Clustering modules by correlation patterns
+5. Visualizing module relationships and sample compositions
+
+---
+
+## Setup
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width = 10,
+  fig.height = 8
+)
+```
+
+### Display Parameters
+
+```{r display_params}
+cat("=== Analysis Parameters ===\n")
+cat("Marker list file:", params$marker_list_file, "\n")
+cat("Seurat object:", params$seurat_object, "\n")
+cat("Output directory:", params$output_dir, "\n")
+cat("Log2FC threshold:", params$log2fc_threshold, "\n")
+cat("Adjusted p-value threshold:", params$padj_threshold, "\n")
+cat("Top N markers per cluster:", params$top_n_markers, "\n")
+cat("Min genes per module:", params$min_genes_per_module, "\n")
+cat("Assay:", params$assay_name, "\n")
+cat("Number of module clusters:", params$n_clusters, "\n")
+cat("Parallel processing:", params$parallel, "\n")
+if(params$parallel) cat("Workers:", params$n_workers, "\n")
+cat("===========================\n\n")
+```
+
+### Load Libraries
+
+```{r libraries}
+packages <- c(
+  "Seurat", "dplyr", "tibble", "tools", "ggplot2",
+  "corrplot", "circlize", "ComplexHeatmap", "parallel", "readr"
+)
+
+invisible(lapply(packages, library, character.only = TRUE))
+cat("All packages loaded successfully!\n")
+```
+
+### Create Output Directory
+
+```{r create_output}
+dir.create(params$output_dir, showWarnings = FALSE, recursive = TRUE)
+cat("Output directory created:", params$output_dir, "\n")
+```
+
+### Setup Parallelization
+
+```{r setup_parallel}
+if(params$parallel) {
+  if (.Platform$OS.type == "unix") {
+    cat("Parallel processing enabled with", params$n_workers, "workers\n")
+    cat("Using mclapply for efficient processing\n")
+  } else {
+    cat("WARNING: mclapply not available on Windows\n")
+    cat("Falling back to sequential processing\n")
+    params$parallel <- FALSE
+  }
+} else {
+  cat("Sequential processing mode\n")
+}
+```
+
+---
+
+## Part 1: Filter and Process Marker Files
+
+### Define Marker Filtering Function
+
+```{r filter_function}
+filter_markers <- function(marker_file) {
+  # Extract base filename for output
+  base_filename <- tools::file_path_sans_ext(basename(marker_file))
+  
+  cat("Processing:", base_filename, "\n")
+  
+  # Read marker file
+  marker_df <- read.table(marker_file, header = TRUE, sep = "\t")
+  
+  # Filter markers by thresholds and select top N
+  markers <- marker_df %>%
+    group_by(cluster) %>%
+    filter(
+      avg_log2FC > params$log2fc_threshold,
+      p_val_adj < params$padj_threshold
+    ) %>%
+    top_n(n = params$top_n_markers, wt = avg_log2FC)
+  
+  # Remove clusters with fewer than minimum genes
+  cluster_counts <- markers %>% count(cluster)
+  valid_clusters <- cluster_counts %>%
+    filter(n >= params$min_genes_per_cluster) %>%
+    pull(cluster)
+  
+  markers <- markers %>% filter(cluster %in% valid_clusters)
+  
+  cat("  Valid clusters:", length(valid_clusters), "\n")
+  cat("  Total markers:", nrow(markers), "\n")
+  
+  # Create list of gene vectors per cluster
+  marker_list <- markers %>%
+    group_by(cluster) %>%
+    summarise(genes = list(unique(GENE_NAME))) %>%
+    deframe()
+  
+  # Identify genes shared between clusters
+  common_genes <- markers %>%
+    count(GENE_NAME) %>%
+    filter(n > 1) %>%
+    pull(GENE_NAME)
+  
+  cat("  Shared genes:", length(common_genes), "\n")
+  
+  # Save outputs
+  marker_file_out <- file.path(
+    params$output_dir,
+    paste0(base_filename, ".Top50.markers.txt")
+  )
+  
+  common_file_out <- file.path(
+    params$output_dir,
+    paste0(base_filename, ".common.shared.between.clusters.markers.txt")
+  )
+  
+  write.table(markers, file = marker_file_out, sep = "\t", col.names = NA)
+  write.table(common_genes, file = common_file_out, sep = "\t", col.names = NA)
+  
+  return(marker_list)
+}
+```
+
+### Read Input Files and Process Markers
+
+```{r process_markers}
+# Read list of marker files
+marker_files <- readLines(params$marker_list_file)
+cat("Number of marker files to process:", length(marker_files), "\n\n")
+
+# Process files in parallel or sequential
+if(params$parallel) {
+  cat("Processing marker files in parallel...\n")
+  gene_set_list <- mclapply(
+    marker_files,
+    filter_markers,
+    mc.cores = params$n_workers
+  )
+} else {
+  cat("Processing marker files sequentially...\n")
+  gene_set_list <- lapply(marker_files, filter_markers)
+}
+
+# Name gene sets by sample
+filenames <- sub("\\.diff\\.txt$", "", basename(marker_files))
+names(gene_set_list) <- filenames
+
+cat("\nTotal samples processed:", length(gene_set_list), "\n")
+```
+
+### Create Flattened Feature List
+
+```{r create_features}
+# Flatten nested list structure: sample -> cluster -> genes
+feature <- unlist(
+  lapply(names(gene_set_list), function(set_name) {
+    lapply(names(gene_set_list[[set_name]]), function(cluster_id) {
+      genes <- gene_set_list[[set_name]][[cluster_id]]
+      setNames(list(genes), paste0(set_name, "_", cluster_id))
+    })
+  }),
+  recursive = FALSE
+)
+
+# Extract feature names
+feature_names <- names(feature)
+cat("Total feature sets created:", length(feature_names), "\n")
+cat("Example features:", head(feature_names, 3), "\n")
+```
+
+---
+
+## Part 2: Add Module Scores to Seurat Object
+
+### Load Seurat Object
+
+```{r load_seurat}
+cat("Loading Seurat object...\n")
+obj <- readRDS(params$seurat_object)
+
+cat("Seurat object loaded:\n")
+cat("  Cells:", ncol(obj), "\n")
+cat("  Features:", nrow(obj), "\n")
+cat("  Assays:", names(obj@assays), "\n")
+
+# Set default assay
+DefaultAssay(obj) <- params$assay_name
+cat("Default assay set to:", params$assay_name, "\n")
+```
+
+### Filter Features by Available Genes
+
+```{r filter_features}
+available_genes <- rownames(obj[[params$assay_name]])
+cat("Genes available in assay:", length(available_genes), "\n\n")
+
+# Filter each feature set to include only available genes
+features_filtered <- lapply(feature, function(gene_set) {
+  intersect(gene_set, available_genes)
+})
+
+# Remove feature sets with too few genes
+features_filtered <- features_filtered[
+  sapply(features_filtered, length) > params$min_genes_per_module
+]
+
+cat("Feature sets after filtering:\n")
+cat("  Total sets:", length(features_filtered), "\n")
+cat("  Total genes:", sum(sapply(features_filtered, length)), "\n")
+cat("  Genes per set (range):", 
+    range(sapply(features_filtered, length)), "\n")
+```
+
+### Compute Module Scores
+
+```{r add_module_scores}
+cat("\nComputing module scores...\n")
+
+obj <- AddModuleScore(
+  obj,
+  features = features_filtered,
+  name = paste0(names(features_filtered), "_score"),
+  assay = params$assay_name
+)
+
+cat("Module scores added to metadata\n")
+
+# Clean column names (remove _scoreXX suffix added by Seurat)
+score_cols <- names(obj@meta.data)[grepl("_score\\d+$", names(obj@meta.data))]
+cleaned_names <- gsub("_score\\d+$", "", score_cols)
+names(obj@meta.data)[names(obj@meta.data) %in% score_cols] <- cleaned_names
+
+cat("Column names cleaned\n")
+```
+
+### Save Updated Seurat Object
+
+```{r save_seurat}
+rds_file <- file.path(params$output_dir, "addmodulescore_seuratobj.rds")
+saveRDS(obj, file = rds_file)
+cat("Updated Seurat object saved:", rds_file, "\n")
+```
+
+### Export Module Features
+
+```{r export_features}
+# Convert feature list to data frame
+features_df <- do.call(rbind, lapply(names(features_filtered), function(set_name) {
+  data.frame(
+    GeneSet = set_name,
+    Gene = features_filtered[[set_name]],
+    stringsAsFactors = FALSE
+  )
+}))
+
+feature_file <- file.path(params$output_dir, "module_features.txt")
+write.table(features_df, file = feature_file, row.names = FALSE, sep = "\t")
+cat("Module features saved:", feature_file, "\n")
+cat("  Total gene-module pairs:", nrow(features_df), "\n")
+```
+
+---
+
+## Part 3: Hierarchical Clustering of Modules
+
+### Extract Module Score Matrix
+
+```{r extract_module_matrix}
+# Get module score columns
+module_cols <- cleaned_names
+module_score_df <- obj@meta.data[, module_cols]
+
+cat("Module score matrix dimensions:", dim(module_score_df), "\n")
+cat("Modules:", length(module_cols), "\n")
+cat("Cells:", nrow(module_score_df), "\n")
+```
+
+### Compute Module Correlation and Clustering
+
+```{r hierarchical_clustering}
+# Transpose: modules as rows, cells as columns
+module_matrix <- as.matrix(t(module_score_df))
+
+# Calculate correlation between modules
+cat("\nComputing module correlations...\n")
+module_cor <- cor(t(module_matrix), method = params$correlation_method)
+
+# Hierarchical clustering
+cat("Performing hierarchical clustering...\n")
+hclust_result <- hclust(
+  as.dist(1 - module_cor),
+  method = params$hclust_method
+)
+
+# Cut tree to define module clusters
+module_clusters <- cutree(hclust_result, k = params$n_clusters)
+
+cat("Modules assigned to", params$n_clusters, "clusters\n")
+cat("Cluster sizes:", table(module_clusters), "\n")
+```
+
+### Create Gene-Cluster Mapping
+
+```{r gene_cluster_mapping}
+# Map modules to clusters
+module_cluster_df <- data.frame(
+  GeneSet = names(module_clusters),
+  Cluster = module_clusters,
+  stringsAsFactors = FALSE
+)
+
+# Join with gene features
+gene_cluster_mapping <- features_df %>%
+  left_join(module_cluster_df, by = "GeneSet")
+
+# Save mapping
+mapping_file <- file.path(params$output_dir, "gene_cluster_mapping.txt")
+write.table(
+  gene_cluster_mapping,
+  file = mapping_file,
+  row.names = FALSE,
+  sep = "\t",
+  quote = FALSE
+)
+
+cat("Gene-cluster mapping saved:", mapping_file, "\n")
+head(gene_cluster_mapping)
+```
+
+---
+
+## Part 4: Visualizations
+
+### Heatmap of Module Scores
+
+```{r heatmap_modules, fig.width=10, fig.height=12}
+# Row-scale module scores
+row_scaled <- t(scale(t(module_matrix)))
+
+# Define cluster colors
+cluster_colors <- rainbow(params$n_clusters)
+names(cluster_colors) <- sort(unique(module_clusters))
+
+# Create row annotation
+row_anno <- rowAnnotation(
+  Cluster = as.factor(module_clusters),
+  col = list(Cluster = cluster_colors),
+  width = unit(0.5, "cm")
+)
+
+# Create heatmap
+cat("\nGenerating module score heatmap...\n")
+ht <- Heatmap(
+  row_scaled,
+  col = colorRamp2(
+    c(-2, -1, 0, 1, 2),
+    c("blue", "lightblue3", "floralwhite", "gold", "gold4")
+  ),
+  name = "Scaled\nExpression",
+  show_column_names = FALSE,
+  show_row_names = TRUE,
+  row_names_gp = gpar(fontsize = 6),
+  width = unit(8, "cm"),
+  cluster_columns = FALSE,
+  cluster_rows = hclust_result,
+  show_row_dend = FALSE,
+  left_annotation = row_anno,
+  heatmap_legend_param = list(
+    at = c(-2, -1, 0, 1, 2),
+    color_bar = "continuous"
+  )
+)
+
+# Save heatmap
+heatmap_file <- file.path(params$output_dir, "transcriptional_module.heatmap.pdf")
+pdf(heatmap_file, height = 12, width = 10)
+draw(ht)
+dev.off()
+
+# Display in notebook
+draw(ht)
+cat("Heatmap saved:", heatmap_file, "\n")
+```
+
+### Correlation Matrix Visualization
+
+```{r correlation_plots, fig.width=10, fig.height=10}
+# Calculate module correlation
+module_scores <- obj@meta.data[, grep("GBM|DMG", colnames(obj@meta.data))]
+colnames(module_scores) <- names(features_filtered)
+cor_matrix <- cor(module_scores, method = params$correlation_method)
+
+# Plot 1: Color-coded correlation
+corr_color_file <- file.path(params$output_dir, "addmodulescore_corrPlot_color.png")
+png(corr_color_file, height = 980, width = 980)
+corrplot(
+  cor_matrix,
+  method = "color",
+  order = "hclust",
+  hclust.method = params$hclust_method,
+  addrect = params$n_clusters,
+  tl.cex = 0.6
+)
+dev.off()
+
+# Display in notebook
+corrplot(
+  cor_matrix,
+  method = "color",
+  order = "hclust",
+  hclust.method = params$hclust_method,
+  addrect = params$n_clusters,
+  tl.cex = 0.6
+)
+
+cat("Correlation plot (color) saved:", corr_color_file, "\n")
+
+# Plot 2: Square correlation with coefficients
+corr_square_file <- file.path(params$output_dir, "addmodulescore_corrPlot_square.png")
+png(corr_square_file, height = 980, width = 980)
+corrplot(
+  cor_matrix,
+  method = "square",
+  order = "hclust",
+  hclust.method = params$hclust_method,
+  addCoef.col = 'black',
+  tl.pos = 'd',
+  cl.pos = 'n',
+  col = COL2('BrBG')
+)
+dev.off()
+
+cat("Correlation plot (square) saved:", corr_square_file, "\n")
+```
+
+---
+
+## Part 5: Sample Composition Analysis
+
+### Map Modules to Sample Groups
+
+```{r map_sample_groups}
+# Create mapped groups based on naming conventions
+df_mapped <- gene_cluster_mapping %>%
+  mutate(
+    first_token = sub("_.*", "", GeneSet),
+    first_two_tokens = sub("^([^_]+_[^_]+).*", "\\1", GeneSet)
+  ) %>%
+  mutate(
+    MappedGroup = case_when(
+      first_token %in% c("GBM1", "GBM4") ~ "GBM_IDH_MUT",
+      first_token %in% c("GBM2", "GBM3") ~ "GBM_IDH_WT",
+      first_two_tokens == "GBM5_1" ~ "GBM_IDH_WT",
+      first_two_tokens == "GBM5_2" ~ "GBM5_2",
+      grepl("^DMG[1-5]$", first_token) ~ "DMG",
+      TRUE ~ "Other"
+    )
+  ) %>%
+  select(GeneSet, Gene, Cluster, MappedGroup)
+
+# Save mapped data
+mapped_file <- file.path(params$output_dir, "with_mapped_group.tsv")
+write.table(
+  df_mapped,
+  file = mapped_file,
+  sep = "\t",
+  quote = FALSE,
+  row.names = FALSE
+)
+
+cat("Sample group mapping saved:", mapped_file, "\n")
+cat("Group distribution:\n")
+print(table(df_mapped$MappedGroup))
+```
+
+### Visualize Sample Composition per Module
+
+```{r sample_composition_plot, fig.width=12, fig.height=6}
+# Summarize counts by Module and Group
+plot_data <- df_mapped %>%
+  count(Cluster, MappedGroup) %>%
+  group_by(Cluster) %>%
+  mutate(Percent = 100 * n / sum(n))
+
+# Define color scheme
+group_colors <- c(
+  "DMG" = "#E41A1C",
+  "GBM_IDH_MUT" = "#4DAF4A",
+  "GBM_IDH_WT" = "#1B5E20",
+  "GBM5_2" = "#377EB8",
+  "Other" = "#999999"
+)
+
+# Create stacked bar plot
+p <- ggplot(plot_data, aes(x = factor(Cluster), y = Percent, fill = MappedGroup)) +
+  geom_bar(stat = "identity", color = "white", linewidth = 0.3) +
+  scale_fill_manual(values = group_colors) +
+  labs(
+    title = "Sample Group Composition per Module Cluster",
+    x = "Module Cluster",
+    y = "Percentage of Genes",
+    fill = "Sample Group"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    axis.text.x = element_text(angle = 0, hjust = 0.5),
+    legend.position = "right"
+  )
+
+# Save plot
+composition_file <- file.path(
+  params$output_dir,
+  "percentage_of_samples_per_module.pdf"
+)
+ggsave(composition_file, plot = p, height = 6, width = 12)
+
+# Display in notebook
+print(p)
+
+cat("Sample composition plot saved:", composition_file, "\n")
+```
+
+---
+
+## Summary Statistics
+
+```{r summary_stats}
+cat("\n=== Analysis Summary ===\n")
+cat("Total samples processed:", length(gene_set_list), "\n")
+cat("Total modules created:", length(features_filtered), "\n")
+cat("Total unique genes in modules:", length(unique(features_df$Gene)), "\n")
+cat("Module clusters identified:", params$n_clusters, "\n")
+cat("Sample groups identified:", length(unique(df_mapped$MappedGroup)), "\n")
+cat("\nModule cluster sizes:\n")
+print(table(module_clusters))
+cat("\nSample group distribution:\n")
+print(table(df_mapped$MappedGroup))
+cat("========================\n")
+```
+
+---
+
+## Session Information
+
+```{r session_info}
+sessionInfo()
+```
+
+---
+
+## Output Files Generated
+
+```{r list_outputs}
+output_files <- list.files(params$output_dir, full.names = FALSE)
+cat("\nFiles created in", params$output_dir, ":\n")
+for(f in output_files) {
+  cat("  -", f, "\n")
+}
+```

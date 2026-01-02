@@ -1,0 +1,230 @@
+---
+title: "Seurat Spatial Analysis with BANKSY"
+output: html_notebook
+params:
+  matrix_list_file: "path/to/matrix_list.txt"
+  output_dir: "path/to/output"
+  mt_threshold: 25
+  min_features: 200
+  lambda: 0.2
+  k_geom: 15
+  pca_dims: 30
+  cluster_resolution: 0.5
+  min_pct: 0.25
+  logfc_threshold: 0.25
+  parallel: TRUE
+  n_workers: 4
+---
+
+# Seurat Spatial Analysis Pipeline
+
+This notebook performs spatial transcriptomics analysis using Seurat and BANKSY.
+
+## Parameters
+
+```{r setup}
+# Display parameters
+cat("Analysis Parameters:\n")
+cat("Matrix list file:", params$matrix_list_file, "\n")
+cat("Output directory:", params$output_dir, "\n")
+cat("MT threshold:", params$mt_threshold, "%\n")
+cat("Min features:", params$min_features, "\n")
+cat("BANKSY lambda:", params$lambda, "\n")
+cat("BANKSY k_geom:", params$k_geom, "\n")
+cat("PCA dimensions:", params$pca_dims, "\n")
+cat("Cluster resolution:", params$cluster_resolution, "\n")
+cat("Parallel processing:", params$parallel, "\n")
+if(params$parallel) {
+  cat("Number of workers:", params$n_workers, "\n")
+}
+```
+
+## Load Libraries
+
+```{r libraries, message=FALSE, warning=FALSE}
+options(echo = TRUE)
+system("ulimit -n 10000")
+
+packages <- c("Seurat", "Banksy", "SeuratData", "dplyr", "pryr", 
+              "SeuratWrappers", "ggplot2", "gridExtra", "parallel")
+invisible(lapply(packages, library, character.only = TRUE))
+
+options(future.globals.maxSize = 4 * 1024^3)
+```
+
+## Setup Parallelization
+
+```{r setup_parallel}
+if(params$parallel) {
+  # Check if running on Unix/Mac
+  if (.Platform$OS.type == "unix") {
+    cat("Setting up parallel processing with", params$n_workers, "workers...\n")
+    cat("Using mclapply (forking) for efficient parallel processing\n")
+    cat("Platform:", .Platform$OS.type, "\n")
+  } else {
+    cat("WARNING: mclapply does not work on Windows.\n")
+    cat("Falling back to sequential processing.\n")
+    cat("For Windows parallelization, consider using BiocParallel or parallel::parLapply()\n")
+    params$parallel <- FALSE
+  }
+} else {
+  cat("Running in sequential mode\n")
+}
+```
+
+## Setup Output Directory
+
+```{r setup_output}
+dir.create(file.path(params$output_dir), showWarnings = TRUE, recursive = TRUE)
+cat("Output directory created:", params$output_dir, "\n")
+```
+
+## Read Input Matrix List
+
+```{r read_matrix_list}
+matrix_vector <- character(0)
+read_input_gene_matrix <- file(params$matrix_list_file, 'r')
+linn <- readLines(read_input_gene_matrix)
+close(read_input_gene_matrix)
+
+# Gene matrix to character vector
+for(i in 1:length(linn)) {
+    matrix_vector <- c(matrix_vector, linn[i])
+}
+
+cat("Number of samples to process:", length(matrix_vector), "\n")
+cat("Samples:\n")
+for(entry in matrix_vector) {
+    split_list <- strsplit(entry, ",")
+    cat("  -", split_list[[1]][1], "\n")
+}
+```
+
+## Process Each Sample
+
+```{r process_samples, warning=FALSE, message=FALSE}
+# Define processing function
+process_sample <- function(i) {
+    split_list <- strsplit(i, ",")
+    sample_name <- split_list[[1]][1]
+    filtered_matrix_infile <- split_list[[1]][2]
+    
+    cat("\n", rep("=", 60), "\n", sep = "")
+    cat("Processing sample:", sample_name, "\n")
+    cat("Data directory:", filtered_matrix_infile, "\n")
+    cat(rep("=", 60), "\n\n", sep = "")
+    
+    # Load spatial data
+    cat("Loading 10X Spatial data...\n")
+    seobj <- Load10X_Spatial(data.dir = filtered_matrix_infile)
+    
+    # QC metrics
+    cat("Calculating QC metrics...\n")
+    seobj[['percent.mt']] <- PercentageFeatureSet(seobj, pattern = '^MT-')
+    
+    # Filter cells
+    cat("Filtering cells (nFeature >", params$min_features, 
+        "& percent.mt <", params$mt_threshold, ")...\n")
+    seobj <- subset(seobj, subset = nFeature_Spatial > params$min_features & 
+                    percent.mt < params$mt_threshold)
+    
+    # SCTransform
+    cat("Running SCTransform...\n")
+    seobj <- SCTransform(seobj, assay = "Spatial")
+    
+    # BANKSY
+    cat("Running BANKSY (lambda =", params$lambda, ", k_geom =", params$k_geom, ")...\n")
+    seobj <- RunBanksy(seobj, lambda = params$lambda, verbose = TRUE, 
+                       assay = 'SCT', slot = 'data', features = 'variable', 
+                       k_geom = params$k_geom)
+    
+    # PCA
+    cat("Running PCA...\n")
+    seobj <- RunPCA(seobj, assay = 'BANKSY', reduction.name = "pca.banksy", 
+                    features = rownames(seobj), npcs = params$pca_dims)
+    
+    # Clustering
+    cat("Finding neighbors and clusters...\n")
+    seobj <- FindNeighbors(seobj, dims = 1:params$pca_dims, reduction = "pca.banksy")
+    seobj <- FindClusters(seobj, cluster.name = "banksy_cluster", 
+                          resolution = params$cluster_resolution)
+    
+    # UMAP
+    cat("Running UMAP...\n")
+    seobj <- RunUMAP(seobj, dims = 1:params$pca_dims, reduction = "pca.banksy")
+    
+    # Generate plots
+    cat("Generating visualizations...\n")
+    Idents(seobj) <- "banksy_cluster"
+    p1 <- DimPlot(seobj, pt.size = 0.25, label = TRUE, label.size = 3, repel = TRUE)
+    p2 <- SpatialDimPlot(seobj, group.by = "banksy_cluster", stroke = NA, 
+                         label = TRUE, label.size = 3, repel = TRUE, 
+                         alpha = 0.5, pt.size.factor = 2)
+    
+    # Save plots
+    sample_dir <- file.path(params$output_dir, sample_name)
+    dir.create(sample_dir, showWarnings = TRUE, recursive = TRUE)
+    
+    png_file <- file.path(sample_dir, paste0(sample_name, ".Spatial_dimPlot.png"))
+    png(png_file, height = 780, width = 980)
+    grid.arrange(p1, p2, ncol = 2)
+    dev.off()
+    
+    cat("Plot saved:", png_file, "\n")
+    
+    # Find markers
+    cat("Finding cluster markers...\n")
+    DefaultAssay(seobj) <- 'Spatial'
+    markers <- FindAllMarkers(seobj, only.pos = TRUE, assay = 'SCT', 
+                             min.pct = params$min_pct, 
+                             logfc.threshold = params$logfc_threshold)
+    
+    # Save results
+    rds_file <- file.path(sample_dir, paste0(sample_name, ".rds"))
+    saveRDS(seobj, file = rds_file)
+    cat("Seurat object saved:", rds_file, "\n")
+    
+    marker_file <- file.path(sample_dir, paste0(sample_name, ".diff.txt"))
+    write.table(data.frame("GENE_NAME" = rownames(markers), markers), 
+                file = marker_file, row.names = FALSE, sep = "\t")
+    cat("Markers saved:", marker_file, "\n")
+    
+    cat("Sample", sample_name, "completed successfully!\n\n")
+    
+    return(seobj)
+}
+
+# Process samples (parallel or sequential)
+if(params$parallel) {
+  cat("Processing", length(matrix_vector), "samples in parallel with mclapply...\n\n")
+  object_list <- mclapply(matrix_vector, process_sample, 
+                          mc.cores = params$n_workers,
+                          mc.preschedule = FALSE)  # Better load balancing for variable-length tasks
+  
+  # Check for errors in parallel processing
+  errors <- sapply(object_list, function(x) inherits(x, "try-error"))
+  if(any(errors)) {
+    cat("WARNING: Some samples failed to process:\n")
+    print(which(errors))
+  }
+} else {
+  cat("Processing", length(matrix_vector), "samples sequentially...\n\n")
+  object_list <- lapply(matrix_vector, process_sample)
+}
+```
+
+## Analysis Complete
+
+```{r summary}
+cat("\n", rep("=", 60), "\n", sep = "")
+cat("ANALYSIS COMPLETE\n")
+cat(rep("=", 60), "\n", sep = "")
+cat("Total samples processed:", length(object_list), "\n")
+cat("Results saved in:", params$output_dir, "\n")
+```
+
+## Session Info
+
+```{r session_info}
+sessionInfo()
+```
